@@ -157,6 +157,8 @@ def doctor_local(cfg: Config) -> dict[str, Any]:
     browser_bins = [p for p in ("google-chrome", "chrome", "chromium", "microsoft-edge") if shutil.which(p)]
     ffmpeg = shutil.which("ffmpeg") or str(root / "bin" / "ffmpeg")
     ffmpeg_exists = bool(shutil.which("ffmpeg") or (root / "bin" / "ffmpeg").exists())
+    opencli = shutil.which("opencli") or ""
+    opencli_doctor = check_opencli_doctor(opencli)
     deps = check_python_deps(py if py else Path(sys.executable))
     return {
         "mode": "local",
@@ -171,6 +173,10 @@ def doctor_local(cfg: Config) -> dict[str, Any]:
         "runs_dir_exists": runs_dir.exists(),
         "ffmpeg": ffmpeg,
         "ffmpeg_exists": ffmpeg_exists,
+        "opencli": opencli,
+        "opencli_exists": bool(opencli),
+        "opencli_doctor_ok": opencli_doctor["ok"],
+        "opencli_doctor_error": opencli_doctor["error"],
         "browser_apps": browser_apps,
         "browser_bins": browser_bins,
         "browser_available": bool(browser_apps or browser_bins),
@@ -191,11 +197,23 @@ def check_python_deps(py: Path) -> dict[str, bool]:
         return {"numpy": False, "requests": False, "websocket": False}
 
 
+def check_opencli_doctor(opencli: str) -> dict[str, Any]:
+    if not opencli:
+        return {"ok": False, "error": "opencli not found"}
+    cp = run_cmd([opencli, "doctor"], timeout=30)
+    if cp.returncode == 0:
+        return {"ok": True, "error": ""}
+    return {"ok": False, "error": (cp.stderr or cp.stdout)[-500:]}
+
+
 def cmd_doctor(args: argparse.Namespace) -> dict[str, Any]:
     cfg = load_config()
     data = doctor_local(cfg)
     missing = []
-    for key in ("app_root_exists", "python_exists", "backend_exists", "ffmpeg_exists", "browser_available"):
+    for key in (
+        "app_root_exists", "python_exists", "backend_exists", "ffmpeg_exists",
+        "browser_available", "opencli_exists", "opencli_doctor_ok",
+    ):
         if not data.get(key):
             missing.append(key)
     deps = data.get("python_deps") or {}

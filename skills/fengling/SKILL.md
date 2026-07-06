@@ -19,6 +19,7 @@ First-run setup:
 Before the first real run on a new Mac, tell the user Fengling needs these local pieces:
 
 - `fengling` CLI installed and configured to `~/fengling-studio`.
+- The bundled Fengling backend installed from the plugin into `~/fengling-studio`.
 - Python runtime used by the CLI.
 - Python packages: `numpy`, `requests`, `websocket-client`.
 - `ffmpeg` for decoding/splitting audio.
@@ -36,6 +37,14 @@ command -v ffmpeg
 ```
 
 If something is missing, explain the missing pieces in plain language and ask whether the user wants the model to install them on their behalf before running install commands. Do not silently install external tools such as OpenCLI, Homebrew packages, Chrome, or ffmpeg on a first-run setup. Installing local Python dependencies through `fengling --json deps install --execute` also requires user approval when it is part of first-run setup.
+
+If the plugin is installed but the local Fengling CLI/backend is missing, install the bundled plugin payload after user approval:
+
+```bash
+cd /path/to/fengling-plugin
+./scripts/install-fengling-local.sh
+fengling --json doctor
+```
 
 If config is missing or wrong, set the local Mac app root:
 
@@ -92,7 +101,7 @@ Use the run's `uploaded_rows.json` first when available:
 fengling --json raw script --execute -- --delete-uploaded-clips /path/to/run/uploaded_rows.json
 ```
 
-Then scan the live Suno Library for remaining upload slice clips and delete those too:
+Then scan the live Suno Library for remaining upload slice clips. This online scan deletes every visible uploaded `_part...` slice clip it finds, so use it as residual cleanup for Fengling intermediates, not as a general Library maintenance command:
 
 ```bash
 fengling --json raw script --execute -- --delete-uploaded-clips /path/to/nonexistent-current-library-scan.json

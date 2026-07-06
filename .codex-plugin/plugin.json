@@ -1,7 +1,7 @@
 {
   "name": "fengling",
   "version": "0.1.0",
-  "description": "Mac-native Fengling CLI and Codex skill for Suno recut upload/render automation.",
+  "description": "Mac-native Fengling CLI, backend, and Codex skill for Suno recut upload/render automation.",
   "author": {
     "name": "WYCM"
   },
@@ -17,7 +17,7 @@
   "interface": {
     "displayName": "Fengling",
     "shortDescription": "Run the migrated Fengling Suno workflow from Codex.",
-    "longDescription": "Fengling packages the Mac-native CLI source and Codex skill for running the migrated Suno recut, upload, Studio assembly, render, and cleanup workflow. It includes first-run dependency guidance, OpenCLI browser login reuse, and cleanup rules for intermediate Suno Library clips.",
+    "longDescription": "Fengling packages the Mac-native CLI source, local backend, and Codex skill for running the migrated Suno recut, upload, Studio assembly, render, and cleanup workflow. It includes first-run dependency guidance, OpenCLI browser login reuse, and cleanup rules for intermediate Suno Library clips.",
     "developerName": "WYCM",
     "category": "Productivity",
     "capabilities": [
