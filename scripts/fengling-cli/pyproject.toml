@@ -1,0 +1,13 @@
+[project]
+name = "fengling-cli"
+version = "0.1.0"
+description = "Composable CLI for the legacy Fengling Studio/Suno recut automation."
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+fengling = "fengling_cli.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
