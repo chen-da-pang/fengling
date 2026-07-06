@@ -6,6 +6,8 @@ description: Use the Mac-native Fengling CLI to inspect, test, or run the migrat
 # Fengling
 
 Use the installed `fengling` CLI as the durable command surface for this project.
+The plugin also bundles the local backend and installer needed to create
+`~/fengling-studio` on a blank Mac.
 
 Start every session with:
 
@@ -36,15 +38,25 @@ opencli doctor
 command -v ffmpeg
 ```
 
-If something is missing, explain the missing pieces in plain language and ask whether the user wants the model to install them on their behalf before running install commands. Do not silently install external tools such as OpenCLI, Homebrew packages, Chrome, or ffmpeg on a first-run setup. Installing local Python dependencies through `fengling --json deps install --execute` also requires user approval when it is part of first-run setup.
+Interpret first-run missing pieces correctly:
+
+- If `~/fengling-studio` or `scripts/suno_auto_recut_upload.py` is missing, do not treat Fengling as unavailable or ask the user to find an old app directory first. The plugin includes the backend payload; ask for approval to run the bundled installer.
+- If `fengling` itself is missing, ask for approval to install the bundled CLI/backend from the plugin.
+- If OpenCLI, `ffmpeg`, Chrome, or Python packages are missing, explain that those are external runtime dependencies and ask whether the user wants the model to install them.
+
+Do not silently install external tools such as OpenCLI, Homebrew packages, Chrome, or ffmpeg on a first-run setup. Installing local Python dependencies through `fengling --json deps install --execute` also requires user approval when it is part of first-run setup.
 
 If the plugin is installed but the local Fengling CLI/backend is missing, install the bundled plugin payload after user approval:
 
 ```bash
-cd /path/to/fengling-plugin
+cd <fengling-plugin-root>
 ./scripts/install-fengling-local.sh
 fengling --json doctor
 ```
+
+To locate `<fengling-plugin-root>`, use the installed plugin directory when available. Common local plugin roots include `~/plugins/fengling` for the personal marketplace checkout or the current plugin source directory in Codex. Confirm the path contains both `skills/fengling/SKILL.md` and `scripts/install-fengling-local.sh` before running the installer.
+
+After the bundled installer runs, re-run `fengling --json doctor`. Only then continue to external dependency installation prompts for any remaining missing items such as OpenCLI, `ffmpeg`, Chrome, or Python packages.
 
 If config is missing or wrong, set the local Mac app root:
 

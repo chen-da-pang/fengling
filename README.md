@@ -13,16 +13,21 @@ the migrated Suno recut/upload/render workflow.
 
 ## First Run
 
-Use the skill's first-run setup section before any live workflow. It checks the
-local CLI, `~/fengling-studio`, Python dependencies, `ffmpeg`, Chrome, and
-OpenCLI. External tools should be installed only after user approval.
+Use the skill's first-run setup section before any live workflow. The plugin
+already includes the Fengling backend payload, so a missing `~/fengling-studio`
+means the bundled installer has not been run yet. It does not mean the user must
+find an old app directory.
 
-After the user approves local setup, run:
+After the user approves local Fengling setup, run from the plugin root:
 
 ```bash
 ./scripts/install-fengling-local.sh
 fengling --json doctor
 ```
+
+Then install any remaining external runtime dependencies only after user
+approval. Those external pieces include Python packages, `ffmpeg`, Chrome, and
+OpenCLI.
 
 ## Runtime Notes
 
