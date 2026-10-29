@@ -66,6 +66,19 @@ Errors are machine-readable and redact secrets:
 
 The CLI never prints Suno tokens. `doctor --json` reports Python packages, Chrome/Edge presence, ffmpeg, and the migrated app root.
 
+## Suno login
+
+Fengling reuses the OpenCLI `fengling-suno` session. It supports the legacy
+Clerk page and the current Suno app runtime; the latter is an undocumented
+interface and can change with a Suno update. New app-runtime credentials are
+checked with a read-only Suno request before use. If no supported session is
+available, Fengling reports that and follows its existing browser fallback.
+On POSIX systems, saved login files are restricted to the current user when
+written or reused. Never include those files or credentials in logs or issues.
+
+The login regression tests use a local Node.js OpenCLI fixture; they are
+skipped when Node.js is unavailable.
+
 ## Safety
 
 - `run upload`, `browser preheat`, and `raw script` are preview-only unless `--execute` is present.

@@ -46,7 +46,10 @@ import argparse
 import base64
 import concurrent.futures as cf
 import copy
+import datetime
+import email.utils
 import json
+import math
 import mimetypes
 import os
 import pathlib
@@ -110,16 +113,164 @@ def sh(cmd: list[str], **kw):
     return subprocess.run(cmd, check=True, text=True, capture_output=True, **kw)
 
 
-OPENCLI_EXPORT_JS = (
-    "(async()=>JSON.stringify({"
-    "token:await window.Clerk?.session?.getToken?.()||'',"
-    "tokenSource:(await window.Clerk?.session?.getToken?.())?'opencli-clerk':'',"
-    "tokenMeta:{clerk:!!window.Clerk,session:!!window.Clerk?.session,ts:Date.now()},"
-    "deviceId:localStorage.getItem('ajs_anonymous_id')||'',"
-    "projectKeys:Object.keys(localStorage).filter(k=>k.includes('studio-project-management-project-info'))"
-    ".map(k=>[k,localStorage.getItem(k)]),"
-    "href:location.href,ts:Date.now()}))()"
-)
+OPENCLI_EXPORT_JS = r"""(async () => {
+    let token = '';
+    let tokenSource = '';
+    const looksLikeSunoSession = candidate => {
+        try {
+            const parts = typeof candidate === 'string' ? candidate.split('.') : [];
+            if (parts.length !== 3 || !parts.every(part => /^[A-Za-z0-9_-]+$/.test(part))) return false;
+            const decode = part => JSON.parse(atob(part.replace(/-/g, '+').replace(/_/g, '/')
+                + '='.repeat((4 - part.length % 4) % 4)));
+            const header = decode(parts[0]);
+            const claims = decode(parts[1]);
+            const issuer = new URL(claims.iss);
+            return header && typeof header === 'object' && !Array.isArray(header)
+                && typeof header.alg === 'string' && header.alg.toLowerCase() !== 'none'
+                && claims && typeof claims === 'object' && !Array.isArray(claims)
+                && typeof claims.exp === 'number' && Number.isFinite(claims.exp)
+                && claims.exp * 1000 > Date.now() && issuer.protocol === 'https:'
+                && (issuer.hostname === 'suno.com' || issuer.hostname.endsWith('.suno.com'));
+        } catch (_) {
+            return false;
+        }
+    };
+    // Current Suno builds keep their authenticated getter in the app runtime
+    // rather than exposing window.Clerk. This is an undocumented interface;
+    // if it changes, fail closed and let the normal login fallback handle it.
+    // The page may be open before its session has finished initializing.
+    for (let attempt = 0; attempt < 20 && !token; attempt++) {
+        try {
+            token = await window.Clerk?.session?.getToken?.() || '';
+            if (token) tokenSource = 'opencli-clerk';
+        } catch (_) {}
+        if (!token && typeof window.TURBOPACK?.push === 'function') {
+            try {
+                const holder = {};
+                const nonce = Date.now() + '-' + Math.random().toString(36).slice(2);
+                const id = 'fengling-auth-' + nonce;
+                const path = '/_next/static/' + id + '.js';
+                await window.TURBOPACK.push([path, id, context => {
+                    holder.getToken = context.i(79076).t;
+                }]);
+                await window.TURBOPACK.push([path, {
+                    otherChunks: [], runtimeModuleIds: [id],
+                }]);
+                if (typeof holder.getToken === 'function') {
+                    const candidate = await holder.getToken();
+                    // Avoid sending unrelated app data to the Suno API if an
+                    // internal module ID is reused for a different purpose.
+                    if (looksLikeSunoSession(candidate)) {
+                        token = candidate;
+                        tokenSource = 'opencli-app-context';
+                    }
+                }
+            } catch (_) {}
+        }
+        if (!token && attempt < 19) {
+            await new Promise(resolve => setTimeout(resolve, 250));
+        }
+    }
+
+    return JSON.stringify({
+        token, tokenSource,
+        tokenMeta: {clerk: !!window.Clerk, session: !!window.Clerk?.session, ts: Date.now()},
+        deviceId: localStorage.getItem('ajs_anonymous_id') || '',
+        projectKeys: Object.keys(localStorage)
+            .filter(k => k.includes('studio-project-management-project-info'))
+            .map(k => [k, localStorage.getItem(k)]),
+        href: location.href, ts: Date.now(),
+    });
+})()"""
+
+
+def write_private_auth_context(token_file: pathlib.Path, data: Dict[str, Any]) -> None:
+    token_file.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(token_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as output:
+        if hasattr(os, "fchmod"):
+            os.fchmod(output.fileno(), 0o600)
+        json.dump(data, output, ensure_ascii=False, indent=2)
+
+
+def read_private_auth_context(token_file: pathlib.Path) -> Dict[str, Any]:
+    if os.name == "posix":
+        token_file.chmod(0o600)
+    return json.loads(token_file.read_text(encoding="utf-8-sig"))
+
+
+def public_auth_origin(href: Any) -> str:
+    try:
+        url = urllib.parse.urlsplit(str(href or ""))
+        if url.scheme in ("http", "https") and url.hostname:
+            return f"{url.scheme}://{url.hostname}"
+    except ValueError:
+        pass
+    return ""
+
+
+class OpenCLISunoProbeError(RuntimeError):
+    """A Suno verification failure that re-login cannot resolve."""
+
+
+def verify_opencli_app_session(data: Dict[str, Any]) -> bool:
+    client = SunoClient(data["token"], data.get("deviceId") or "")
+    for attempt in range(3):
+        delay = 0.5 * (attempt + 1)
+        try:
+            probe = requests.get(
+                API + "/api/feed/v2?is_liked=false&limit=1&page=0",
+                headers=client.headers(), timeout=8, allow_redirects=False,
+            )
+        except requests.RequestException:
+            if attempt == 2:
+                raise OpenCLISunoProbeError(
+                    "Suno session verification temporarily unavailable (network error)"
+                ) from None
+        else:
+            if probe.status_code == 401:
+                return False
+            if probe.status_code == 200:
+                try:
+                    feed = probe.json()
+                except ValueError:
+                    raise OpenCLISunoProbeError(
+                        "Suno session verification returned an unexpected response"
+                    ) from None
+                if not isinstance(feed, dict) or not isinstance(feed.get("clips"), list):
+                    raise OpenCLISunoProbeError(
+                        "Suno session verification returned an unexpected response"
+                    )
+                return True
+            if probe.status_code not in (429, 500, 502, 503, 504):
+                raise OpenCLISunoProbeError(
+                    f"Suno session verification failed with HTTP {probe.status_code}"
+                )
+            if probe.status_code == 429 and probe.headers.get("Retry-After"):
+                try:
+                    value = probe.headers["Retry-After"].strip()
+                    try:
+                        retry_after = float(value)
+                    except ValueError:
+                        date = email.utils.parsedate_to_datetime(value)
+                        if date.tzinfo is None:
+                            date = date.replace(tzinfo=datetime.timezone.utc)
+                        retry_after = date.timestamp() - time.time()
+                    if not math.isfinite(retry_after) or retry_after > 2:
+                        raise OpenCLISunoProbeError(
+                            "Suno session verification rate limited; retry later"
+                        )
+                    delay = max(delay, retry_after)
+                except (TypeError, ValueError, OverflowError):
+                    raise OpenCLISunoProbeError(
+                        "Suno session verification rate limited; retry later"
+                    ) from None
+            if attempt == 2:
+                raise OpenCLISunoProbeError(
+                    f"Suno session verification temporarily unavailable (HTTP {probe.status_code})"
+                )
+        time.sleep(delay)
+    return False
 
 
 def export_opencli_suno_token(
@@ -143,6 +294,8 @@ def export_opencli_suno_token(
             raw = raw.split("\n\n  Update available:", 1)[0].strip()
         data = json.loads(raw)
         if not data.get("token"):
+            print("[auth] OpenCLI did not provide a supported Suno login; trying fallback.",
+                  flush=True)
             return None
         if require_project_keys and not data.get("projectKeys"):
             subprocess.run(
@@ -158,12 +311,42 @@ def export_opencli_suno_token(
             data = json.loads(raw)
         if require_project_keys and not data.get("projectKeys"):
             return None
+        if not data.get("token"):
+            print("[auth] OpenCLI did not provide a supported Suno login; trying fallback.",
+                  flush=True)
+            return None
+        if data.get("tokenSource") == "opencli-app-context":
+            # The app runtime is undocumented. Verify the returned value with
+            # Suno before persisting it or reporting that login succeeded.
+            if not verify_opencli_app_session(data):
+                print("[auth] OpenCLI session was rejected; refreshing once.", flush=True)
+                raw = subprocess.run(
+                    ["opencli", "browser", session, "eval", OPENCLI_EXPORT_JS],
+                    text=True, capture_output=True, timeout=30, check=True,
+                ).stdout.strip()
+                if "\n\n  Update available:" in raw:
+                    raw = raw.split("\n\n  Update available:", 1)[0].strip()
+                data = json.loads(raw)
+                if not data.get("token"):
+                    print("[auth] OpenCLI did not provide a supported Suno login after refresh.",
+                          flush=True)
+                    return None
+                if require_project_keys and not data.get("projectKeys"):
+                    print("[auth] OpenCLI did not provide the current Studio project after refresh.",
+                          flush=True)
+                    return None
+                if not verify_opencli_app_session(data):
+                    print("[auth] OpenCLI Suno session verification failed: HTTP 401",
+                          flush=True)
+                    return None
         data["tokenSource"] = data.get("tokenSource") or "opencli-clerk"
-        token_file.parent.mkdir(parents=True, exist_ok=True)
-        token_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        print(f"[auth] Suno login OK tokenSource={data.get('tokenSource')} href={data.get('href')}",
+        write_private_auth_context(token_file, data)
+        print(f"[auth] Suno login OK tokenSource={data.get('tokenSource')} "
+              f"href={public_auth_origin(data.get('href'))}",
               flush=True)
         return data
+    except OpenCLISunoProbeError:
+        raise
     except Exception as e:
         print(f"[auth] OpenCLI login reuse unavailable, falling back to dedicated browser: {e}",
               flush=True)
@@ -617,7 +800,7 @@ def load_saved_login(token_file: pathlib.Path = DEFAULT_TOKEN_FILE,
     try:
         if not token_file.exists():
             return None
-        data = json.loads(token_file.read_text(encoding="utf-8-sig"))
+        data = read_private_auth_context(token_file)
         if not data.get("token"):
             return None
         href = str(data.get("href") or "")
@@ -656,7 +839,7 @@ def wait_for_refreshed_extension_login(
     last_error = ""
     while time.time() < deadline:
         try:
-            data = json.loads(token_file.read_text(encoding="utf-8-sig"))
+            data = read_private_auth_context(token_file)
             token = str(data.get("token") or "")
             source = str(data.get("tokenSource") or "")
             received_at = int(data.get("receivedAt") or data.get("ts") or 0)
@@ -845,7 +1028,7 @@ def export_chrome_suno_token(
                         pass
                     print(json.dumps({
                         "authConfirm": True,
-                        "href": data.get("href"),
+                        "href": public_auth_origin(data.get("href")),
                         "tokenSource": data.get("tokenSource"),
                     }, ensure_ascii=False), flush=True)
                     wait_until = time.time() + max(30, min(300, login_timeout))
@@ -868,8 +1051,9 @@ def export_chrome_suno_token(
                         print("[auth] 当前 Suno 账号未确认使用，请在浏览器里退出旧账号并登录新账号。", flush=True)
                         time.sleep(2)
                         continue
-                token_file.write_text(json.dumps(data, ensure_ascii=False, indent=2))
-                print(f"[auth] Suno login OK tokenSource={data.get('tokenSource')} href={data.get('href')}",
+                write_private_auth_context(token_file, data)
+                print(f"[auth] Suno login OK tokenSource={data.get('tokenSource')} "
+                      f"href={public_auth_origin(data.get('href'))}",
                       flush=True)
                 if close_after_success:
                     close_cdp_browser()
@@ -2331,7 +2515,7 @@ def main():
         print(json.dumps({
             "loginOk": True,
             "tokenSource": ctx.get("tokenSource"),
-            "href": ctx.get("href"),
+            "href": public_auth_origin(ctx.get("href")),
         }, ensure_ascii=False), flush=True)
         return
 
@@ -2364,7 +2548,7 @@ def main():
                                max_age_sec=int(os.environ.get("SUNO_SAVED_TOKEN_MAX_AGE", "7200")))
         if ctx:
             print(f"[auth] using saved Suno login tokenSource={ctx.get('tokenSource')} "
-                  f"href={ctx.get('href')}", flush=True)
+                  f"href={public_auth_origin(ctx.get('href'))}", flush=True)
     if not ctx:
         if os.environ.get("SUNO_NO_BROWSER_ON_UPLOAD", "0") == "1":
             raise RuntimeError(f"没有可用的 Suno 登录状态，请先点击[连接 Suno]，通过默认浏览器登录助手连接后再上传。token路径：{DEFAULT_TOKEN_FILE}")
